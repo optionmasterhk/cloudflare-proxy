@@ -98,9 +98,16 @@ python examples/yfinance_client.py
 | 現象 | 意思 |
 |------|------|
 | Worker 回 JSON `{"error":"unauthorized","reason":"key_mismatch"}` | **PROXY_KEY** 同 Zeabur `YF_PROXY_KEY` 唔啱 |
-| Observability 入面 `fetch` span 打去 `query1.finance.yahoo.com`，status **401**，body ~89 bytes | **Yahoo** Invalid Crumb／缺 cookie；**proxy key 已經過咗** |
+| Observability 入面 `fetch` span 打去 `query1.finance.yahoo.com`，status **401**，body ~89 bytes | **Yahoo** Invalid Crumb／缺 cookie（舊版）；而家 Worker 會自己 bootstrap `A3`+crumb 並喺 401 時 refresh 再試一次 |
 
-Yahoo 嘅 `/v7/finance/options/...`、`/v7/finance/quote` 要先有 `A3` cookie（經 `/fc/`）再 `getcrumb`。Worker 會剝走 `Set-Cookie` 嘅 `Domain=.yahoo.com`，唔係嘅話 cookie 唔會黏喺 `*.workers.dev`，後續 options 就會 401。
+Yahoo 嘅 `/v7/finance/options/...`、`/v7/finance/quote` 要 cookie + crumb。Worker 會：
+
+1. 直接向 `fc.yahoo.com` / `getcrumb` 攞 session（isolate 內 cache）
+2. 自動加喺轉發去 Yahoo 嘅請求
+3. 上游仍 401/403 就 force refresh 再 retry 一次
+4. 同時剝走 `Set-Cookie` 嘅 `Domain=.yahoo.com`，方便 client jar
+
+所以就算 Zeabur 端 cookie jar 留唔住 Yahoo domain，都應該可以經 proxy 攞到 options／quote 數據。
 
 ## 安全建議
 

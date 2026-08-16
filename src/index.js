@@ -16,7 +16,17 @@
  *        /finance/...
  *
  * Auth: Authorization: Bearer <key>  or  X-Proxy-Key: <key>
+ *
+ * Yahoo cookie/crumb: Worker bootstraps A3 + crumb against Yahoo and injects
+ * them on API calls (and retries once on upstream 401/403), so options/quote
+ * work even when client jars cannot keep Domain=.yahoo.com cookies.
  */
+
+import {
+  applyYahooSession,
+  isYahooApiHost,
+  resetYahooSession,
+} from "./yahoo-session.js";
 
 const HOST_ALIASES = {
   query1: "query1.finance.yahoo.com",
@@ -82,7 +92,7 @@ function copyUpstreamHeaders(upstream) {
   return responseHeaders;
 }
 
-export { rewriteUpstreamCookie, copyUpstreamHeaders };
+export { rewriteUpstreamCookie, copyUpstreamHeaders, resetYahooSession };
 
 export default {
   async fetch(request, env) {
@@ -346,6 +356,23 @@ async function proxyRequest(request, target) {
     headers.set("Accept", "*/*");
   }
 
+  const yahoo = isYahooApiHost(target.hostname);
+  const dest = new URL(target.toString());
+
+  if (yahoo) {
+    try {
+      await applyYahooSession(dest, headers, {
+        userAgent: headers.get("User-Agent") || undefined,
+      });
+    } catch (err) {
+      console.log({
+        message: "[yahoo-session] bootstrap failed (continuing without)",
+        error: err instanceof Error ? err.message : String(err),
+        path: dest.pathname,
+      });
+    }
+  }
+
   const init = {
     method: request.method,
     headers,
@@ -356,19 +383,43 @@ async function proxyRequest(request, target) {
     init.body = request.body;
   }
 
-  const upstream = await fetch(target.toString(), init);
+  let upstream = await fetch(dest.toString(), init);
 
-  // Workers Observability "fetch" spans show Yahoo's status. Clarify that a
-  // 401 here is upstream auth (cookie/crumb), not PROXY_KEY mismatch.
-  if (upstream.status === 401 || upstream.status === 403) {
+  // Cookie/crumb can expire or be mismatched; refresh once and retry.
+  if (yahoo && (upstream.status === 401 || upstream.status === 403)) {
     console.log({
-      message: `[upstream] ${target.hostname} returned ${upstream.status} (proxy auth already OK)`,
+      message: `[upstream] ${dest.hostname} returned ${upstream.status}; refreshing Yahoo session`,
       upstream_status: upstream.status,
-      upstream_host: target.hostname,
-      upstream_path: target.pathname,
+      upstream_host: dest.hostname,
+      upstream_path: dest.pathname,
       has_cookie: headers.has("cookie"),
-      has_crumb: target.searchParams.has("crumb"),
-      hint: "Yahoo options/quote need cookie+crumb. Worker strips Domain=.yahoo.com on Set-Cookie so A3 sticks to the Worker host.",
+      has_crumb: dest.searchParams.has("crumb"),
+    });
+    try {
+      // Drain body so the connection can be reused cleanly.
+      await upstream.arrayBuffer().catch(() => {});
+      await applyYahooSession(dest, headers, {
+        userAgent: headers.get("User-Agent") || undefined,
+        force: true,
+        replaceCrumb: true,
+      });
+      upstream = await fetch(dest.toString(), init);
+    } catch (err) {
+      console.log({
+        message: "[yahoo-session] refresh failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  if (yahoo && (upstream.status === 401 || upstream.status === 403)) {
+    console.log({
+      message: `[upstream] ${dest.hostname} returned ${upstream.status} after session inject (proxy auth already OK)`,
+      upstream_status: upstream.status,
+      upstream_host: dest.hostname,
+      upstream_path: dest.pathname,
+      has_cookie: headers.has("cookie"),
+      has_crumb: dest.searchParams.has("crumb"),
     });
   }
 
