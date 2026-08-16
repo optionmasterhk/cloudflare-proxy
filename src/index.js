@@ -220,7 +220,7 @@ function authCandidates(headerRaw, bearerRaw) {
 
 function debugAuthEnabled(env) {
   const flag = env && env.DEBUG_AUTH;
-  if (flag == null || flag === "") return true;
+  if (flag == null || flag === "") return false;
   return !["0", "false", "off", "no"].includes(String(flag).trim().toLowerCase());
 }
 
