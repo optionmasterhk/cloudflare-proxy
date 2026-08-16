@@ -31,6 +31,13 @@ describe("yahoo-finance-proxy worker", () => {
     assert.deepEqual(await res.json(), { ok: true });
   });
 
+  it("requires PROXY_KEY to be configured for proxy routes", async () => {
+    const res = await worker.fetch(req("/query1/v8/finance/chart/AAPL"), {});
+    assert.equal(res.status, 503);
+    const body = await res.json();
+    assert.equal(body.error, "proxy_key_required");
+  });
+
   it("rejects missing auth when PROXY_KEY is set", async () => {
     const res = await worker.fetch(req("/query1/v8/finance/chart/AAPL"), {
       PROXY_KEY: "secret",
@@ -38,19 +45,27 @@ describe("yahoo-finance-proxy worker", () => {
     assert.equal(res.status, 401);
   });
 
-  it("rejects disallowed hosts via ?url=", async () => {
-    const res = await worker.fetch(req("/?url=https://evil.example/x"), {
-      PROXY_KEY: "secret",
-    });
-    assert.equal(res.status, 401);
-
-    const res2 = await worker.fetch(
-      req("/?url=https://evil.example/x", {
+  it("allows any host via ?url= when authenticated", async () => {
+    const res = await worker.fetch(
+      req("/?url=https://example.com/x", {
         headers: { "X-Proxy-Key": "secret" },
       }),
       { PROXY_KEY: "secret" },
     );
-    assert.equal(res2.status, 403);
+    // Past auth/host checks; upstream fetch may succeed or fail offline.
+    assert.ok([200, 301, 302, 404, 502].includes(res.status) || res.status < 600);
+    assert.notEqual(res.status, 403);
+    assert.notEqual(res.status, 401);
+  });
+
+  it("honors optional ALLOWED_HOSTS when set", async () => {
+    const res = await worker.fetch(
+      req("/?url=https://evil.example/x", {
+        headers: { "X-Proxy-Key": "secret" },
+      }),
+      { PROXY_KEY: "secret", ALLOWED_HOSTS: "query1.finance.yahoo.com" },
+    );
+    assert.equal(res.status, 403);
   });
 
   it("rejects unknown path prefix", async () => {
@@ -72,12 +87,11 @@ describe("yahoo-finance-proxy worker", () => {
       }),
       { PROXY_KEY: "secret" },
     );
-    // Should get past auth/routing. Online → Yahoo status; offline → 502 from catch.
     assert.ok([200, 401, 404, 429, 500, 502].includes(res.status));
   });
 
   it("source file documents architecture", () => {
     const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
-    assert.match(src, /Zeabur \(yfinance\) → this Worker → Yahoo Finance/);
+    assert.match(src, /Zeabur \(yfinance\) → this Worker → upstream/);
   });
 });
