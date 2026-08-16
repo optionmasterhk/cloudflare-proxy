@@ -9,6 +9,9 @@ compatibility_date = "2025-08-01"
 #   npx wrangler secret put PROXY_KEY
 # Value must equal Zeabur YF_PROXY_KEY (no extra quotes / newline).
 #
-# Optional: restrict upstream hosts (comma-separated). Unset = any host allowed.
-# [vars]
+# DEBUG_AUTH=1 (default): on 401/503, console.log both keys as raw + hex +
+# spaced chars so Cloudflare dashboard logs can compare them. Set to "0" after
+# debugging (and rotate PROXY_KEY if logs were shared).
+[vars]
+DEBUG_AUTH = "1"
 # ALLOWED_HOSTS = "query1.finance.yahoo.com,query2.finance.yahoo.com"

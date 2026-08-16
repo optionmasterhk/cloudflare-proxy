@@ -99,6 +99,7 @@ python examples/yfinance_client.py
 2. 不要把密鑰寫進前端或公開 repo。
 3. 如需額外限制上游，可選設 `ALLOWED_HOSTS`。
 4. 免費額度夠「幾十個 ticker、定期更新」；高頻輪詢請自行節流。
+5. **DEBUG_AUTH**（預設 `1`）：401/503 會喺 Worker logs 印 `[auth-debug]`，包括 Zeabur 傳來嘅 key 同 Worker `PROXY_KEY`（raw / hex / spaced）。Dashboard 自動 request log 會把 `x-proxy-key` 顯示成 `REDACTED`，要睇呢條 console log。對完之後設 `DEBUG_AUTH=0` 並 rotate key。
 
 ## 指令
 

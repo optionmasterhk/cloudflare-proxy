@@ -131,4 +131,59 @@ describe("yahoo-finance-proxy worker", () => {
     const src = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
     assert.match(src, /Zeabur \(yfinance\) → this Worker → upstream/);
   });
+
+  it("accepts duplicated X-Proxy-Key values joined by comma", async () => {
+    const res = await worker.fetch(
+      req("/other/v8/finance/chart/AAPL", {
+        headers: { "X-Proxy-Key": "secret, secret" },
+      }),
+      { PROXY_KEY: "secret" },
+    );
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error, "unknown_prefix");
+  });
+
+  it("logs both keys on mismatch when DEBUG_AUTH is on", async () => {
+    const lines = [];
+    const orig = console.log;
+    console.log = (...args) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      const res = await worker.fetch(
+        req("/query1/v7/finance/options/SPY", {
+          headers: { "X-Proxy-Key": "zeabur-key" },
+        }),
+        { PROXY_KEY: "worker-key", DEBUG_AUTH: "1" },
+      );
+      assert.equal(res.status, 401);
+    } finally {
+      console.log = orig;
+    }
+    const blob = lines.join("\n");
+    assert.match(blob, /\[auth-debug\] key_mismatch/);
+    assert.match(blob, /zeabur-key/);
+    assert.match(blob, /worker-key/);
+    assert.match(blob, /7a 65 61 62 75 72 2d 6b 65 79/);
+    assert.match(blob, /77 6f 72 6b 65 72 2d 6b 65 79/);
+  });
+
+  it("skips plaintext auth logs when DEBUG_AUTH=0", async () => {
+    const lines = [];
+    const orig = console.log;
+    console.log = (...args) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      await worker.fetch(
+        req("/query1/v7/finance/options/SPY", {
+          headers: { "X-Proxy-Key": "zeabur-key" },
+        }),
+        { PROXY_KEY: "worker-key", DEBUG_AUTH: "0" },
+      );
+    } finally {
+      console.log = orig;
+    }
+    assert.equal(lines.join("\n").includes("[auth-debug]"), false);
+  });
 });
