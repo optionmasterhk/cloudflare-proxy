@@ -62,6 +62,54 @@ def rewrite_yahoo_url(url: str, proxy_base: str) -> Optional[str]:
     return rewritten
 
 
+def _proxy_hostname(proxy_base: str) -> str:
+    return (urlsplit(proxy_base).hostname or "").lower()
+
+
+def adopt_yahoo_cookies_for_proxy(session: "_requests.Session", proxy_base: str) -> int:
+    """
+    Re-bind any .yahoo.com cookies onto the Worker host.
+
+    Defense in depth if an older Worker still forwards Domain=.yahoo.com:
+    yfinance's crumb flow needs A3 on later /query1|/query2 calls to the
+    same proxy host.
+    """
+    host = _proxy_hostname(proxy_base)
+    if not host:
+        return 0
+
+    jar = getattr(session, "cookies", None)
+    if jar is None:
+        return 0
+
+    adopted = 0
+    # requests / curl_cffi CookieJar iteration yields cookie objects.
+    try:
+        cookies = list(jar)
+    except TypeError:  # pragma: no cover
+        return 0
+
+    for cookie in cookies:
+        domain = (getattr(cookie, "domain", None) or "").lstrip(".").lower()
+        name = getattr(cookie, "name", None)
+        value = getattr(cookie, "value", None)
+        if not name or value is None:
+            continue
+        if domain != "yahoo.com" and not domain.endswith(".yahoo.com"):
+            continue
+        # Set without Domain so it applies to the Worker host.
+        try:
+            jar.set(name, value, domain=host, path=getattr(cookie, "path", None) or "/")
+            adopted += 1
+        except Exception:  # pragma: no cover
+            try:
+                jar.set(name, value)
+                adopted += 1
+            except Exception:
+                pass
+    return adopted
+
+
 class YahooProxySession(_requests.Session):
     """Session that tunnels Yahoo hosts through the Cloudflare Worker."""
 
@@ -95,11 +143,15 @@ class YahooProxySession(_requests.Session):
             scheme = urlsplit(target).scheme.lower()
             if scheme in ("http", "https"):
                 proxied = f"{self.proxy_base}/?url={quote(target, safe='')}"
-                return super().request(method, proxied, headers=headers, **kwargs)
+                resp = super().request(method, proxied, headers=headers, **kwargs)
+                adopt_yahoo_cookies_for_proxy(self, self.proxy_base)
+                return resp
 
         rewritten = rewrite_yahoo_url(target, self.proxy_base)
         if rewritten is not None:
-            return super().request(method, rewritten, headers=headers, **kwargs)
+            resp = super().request(method, rewritten, headers=headers, **kwargs)
+            adopt_yahoo_cookies_for_proxy(self, self.proxy_base)
+            return resp
 
         return super().request(method, target, headers=headers, **kwargs)
 

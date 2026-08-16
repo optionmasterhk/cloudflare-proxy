@@ -12,6 +12,7 @@ const mod = await import(
   pathToFileURL(new URL("../src/index.js", import.meta.url).pathname).href
 );
 const worker = mod.default;
+const { rewriteUpstreamCookie } = mod;
 
 function req(path, init = {}) {
   return new Request(`https://proxy.example${path}`, init);
@@ -206,5 +207,90 @@ describe("yahoo-finance-proxy worker", () => {
       console.log = orig;
     }
     assert.equal(lines.join("\n").includes("[auth-debug]"), false);
+  });
+
+  it("strips Domain=.yahoo.com from upstream Set-Cookie", () => {
+    const raw =
+      "A3=abc; Expires=Mon, 16 Aug 2027 18:45:29 GMT; Max-Age=31557600; Domain=.yahoo.com; Path=/; SameSite=None; Secure; HttpOnly";
+    const out = rewriteUpstreamCookie(raw);
+    assert.equal(out.includes("Domain="), false);
+    assert.match(out, /^A3=abc;/);
+    assert.match(out, /Path=\//);
+    assert.match(out, /SameSite=None/);
+    assert.match(out, /HttpOnly/);
+  });
+
+  it("does not forward Authorization Bearer to upstream", async () => {
+    const calls = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      calls.push({ url: String(url), headers: new Headers(init.headers || {}) });
+      return new Response("ok", {
+        status: 200,
+        headers: {
+          "set-cookie":
+            "A3=xyz; Domain=.yahoo.com; Path=/; SameSite=None; Secure; HttpOnly",
+        },
+      });
+    };
+    try {
+      const res = await worker.fetch(
+        req("/fc/", {
+          headers: {
+            Authorization: "Bearer secret",
+            Cookie: "A3=keep-me",
+          },
+        }),
+        { PROXY_KEY: "secret" },
+      );
+      assert.equal(res.status, 200);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].url, "https://fc.yahoo.com/");
+      assert.equal(calls[0].headers.get("authorization"), null);
+      assert.equal(calls[0].headers.get("cookie"), "A3=keep-me");
+      assert.equal(calls[0].headers.get("x-proxy-key"), null);
+      const setCookie =
+        typeof res.headers.getSetCookie === "function"
+          ? res.headers.getSetCookie()
+          : [res.headers.get("set-cookie")].filter(Boolean);
+      assert.ok(setCookie.length >= 1);
+      assert.equal(setCookie.some((c) => /Domain=/i.test(c)), false);
+      assert.equal(setCookie.some((c) => c.startsWith("A3=xyz")), true);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("logs upstream 401 as Yahoo auth, not proxy key", async () => {
+    const lines = [];
+    const orig = console.log;
+    const origFetch = globalThis.fetch;
+    console.log = (...args) => {
+      lines.push(
+        args
+          .map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
+          .join(" "),
+      );
+    };
+    globalThis.fetch = async () =>
+      new Response('{"finance":{"result":null,"error":{"code":"Unauthorized"}}}', {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      });
+    try {
+      const res = await worker.fetch(
+        req("/query1/v7/finance/options/SPY", {
+          headers: { "X-Proxy-Key": "secret" },
+        }),
+        { PROXY_KEY: "secret" },
+      );
+      assert.equal(res.status, 401);
+    } finally {
+      console.log = orig;
+      globalThis.fetch = origFetch;
+    }
+    const blob = lines.join("\n");
+    assert.match(blob, /\[upstream\].*401.*proxy auth already OK/);
+    assert.match(blob, /has_crumb/);
   });
 });

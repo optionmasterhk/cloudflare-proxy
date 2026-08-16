@@ -41,7 +41,48 @@ const HOP_BY_HOP = new Set([
   "x-forwarded-proto",
   "x-real-ip",
   "x-proxy-key",
+  // Never forward the Worker gate token to Yahoo (Bearer PROXY_KEY).
+  "authorization",
 ]);
+
+/**
+ * Yahoo sets `Domain=.yahoo.com` on A3/consent cookies. Clients talk to the
+ * Worker host (*.workers.dev), so those cookies never stick / never get sent
+ * on later /query1|/query2|/fc calls — Yahoo then 401s options/quote with
+ * Invalid Crumb. Strip Domain so the cookie scopes to the Worker host.
+ */
+function rewriteUpstreamCookie(raw) {
+  const parts = String(raw)
+    .split(";")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return raw;
+  const [nameValue, ...attrs] = parts;
+  const kept = attrs.filter((attr) => {
+    const name = attr.split("=")[0].trim().toLowerCase();
+    return name !== "domain";
+  });
+  return [nameValue, ...kept].join("; ");
+}
+
+function copyUpstreamHeaders(upstream) {
+  const responseHeaders = new Headers();
+  for (const [key, value] of upstream.headers) {
+    if (key.toLowerCase() === "set-cookie") continue;
+    responseHeaders.append(key, value);
+  }
+
+  const cookies =
+    typeof upstream.headers.getSetCookie === "function"
+      ? upstream.headers.getSetCookie()
+      : [];
+  for (const cookie of cookies) {
+    responseHeaders.append("set-cookie", rewriteUpstreamCookie(cookie));
+  }
+  return responseHeaders;
+}
+
+export { rewriteUpstreamCookie, copyUpstreamHeaders };
 
 export default {
   async fetch(request, env) {
@@ -316,7 +357,22 @@ async function proxyRequest(request, target) {
   }
 
   const upstream = await fetch(target.toString(), init);
-  const responseHeaders = new Headers(upstream.headers);
+
+  // Workers Observability "fetch" spans show Yahoo's status. Clarify that a
+  // 401 here is upstream auth (cookie/crumb), not PROXY_KEY mismatch.
+  if (upstream.status === 401 || upstream.status === 403) {
+    console.log({
+      message: `[upstream] ${target.hostname} returned ${upstream.status} (proxy auth already OK)`,
+      upstream_status: upstream.status,
+      upstream_host: target.hostname,
+      upstream_path: target.pathname,
+      has_cookie: headers.has("cookie"),
+      has_crumb: target.searchParams.has("crumb"),
+      hint: "Yahoo options/quote need cookie+crumb. Worker strips Domain=.yahoo.com on Set-Cookie so A3 sticks to the Worker host.",
+    });
+  }
+
+  const responseHeaders = copyUpstreamHeaders(upstream);
   responseHeaders.set("Access-Control-Allow-Origin", "*");
   responseHeaders.set("Access-Control-Expose-Headers", "*");
   responseHeaders.set("Vary", "Origin, Authorization, X-Proxy-Key");
