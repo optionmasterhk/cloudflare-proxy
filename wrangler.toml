@@ -2,8 +2,9 @@ name = "yahoo-finance-proxy"
 main = "src/index.js"
 compatibility_date = "2025-08-01"
 
-# Optional public vars (non-secret). Set PROXY_KEY as a Worker secret:
+# Set PROXY_KEY as a Worker secret (required for proxy routes):
 #   npx wrangler secret put PROXY_KEY
-[vars]
-# Comma-separated allowlist. Leave empty to use the built-in Yahoo hosts only.
-# ALLOWED_HOSTS = "query1.finance.yahoo.com,query2.finance.yahoo.com,fc.yahoo.com,finance.yahoo.com"
+#
+# Optional: restrict upstream hosts (comma-separated). Unset = any host allowed.
+# [vars]
+# ALLOWED_HOSTS = "query1.finance.yahoo.com,query2.finance.yahoo.com"

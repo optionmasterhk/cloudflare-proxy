@@ -1,27 +1,22 @@
 /**
- * Minimal Yahoo Finance reverse proxy for Cloudflare Workers.
+ * Minimal reverse proxy for Cloudflare Workers (yfinance / Zeabur friendly).
  *
- * Architecture: Zeabur (yfinance) → this Worker → Yahoo Finance
+ * Architecture: Zeabur (yfinance) → this Worker → upstream
+ *
+ * Auth is the gate: set Worker secret PROXY_KEY. With a valid key, any
+ * http(s) upstream is allowed. Optional ALLOWED_HOSTS can still restrict.
  *
  * Supported request shapes:
- *   1) Path prefix (preferred for yfinance):
+ *   1) Full URL query (any host):
+ *        /?url=https://query1.finance.yahoo.com/v8/finance/chart/AAPL
+ *   2) Yahoo path shortcuts:
  *        /query1/v8/finance/chart/AAPL
  *        /query2/v1/test/getcrumb
  *        /fc/   (→ https://fc.yahoo.com/)
  *        /finance/...
- *   2) Full URL query:
- *        /?url=https://query1.finance.yahoo.com/v8/finance/chart/AAPL
  *
- * Auth (recommended): set Worker secret PROXY_KEY, then send either
- *   Authorization: Bearer <key>  or  X-Proxy-Key: <key>
+ * Auth: Authorization: Bearer <key>  or  X-Proxy-Key: <key>
  */
-
-const DEFAULT_ALLOWED_HOSTS = [
-  "query1.finance.yahoo.com",
-  "query2.finance.yahoo.com",
-  "fc.yahoo.com",
-  "finance.yahoo.com",
-];
 
 const HOST_ALIASES = {
   query1: "query1.finance.yahoo.com",
@@ -61,10 +56,10 @@ export default {
         return json(
           {
             service: "yahoo-finance-proxy",
-            architecture: "Zeabur → Cloudflare Worker → Yahoo Finance",
+            architecture: "Zeabur → Cloudflare Worker → upstream",
             usage: {
-              path: "/query1/v8/finance/chart/AAPL",
-              query: "/?url=https://query1.finance.yahoo.com/v8/finance/chart/AAPL",
+              any_host: "/?url=https://example.com/path",
+              yahoo_shortcut: "/query1/v8/finance/chart/AAPL",
               auth: "Authorization: Bearer <PROXY_KEY>  or  X-Proxy-Key: <PROXY_KEY>",
             },
           },
@@ -92,18 +87,33 @@ export default {
   },
 };
 
+/** Optional allowlist. Empty / unset → all hosts allowed (PROXY_KEY is the gate). */
 function allowedHosts(env) {
   const raw = (env && env.ALLOWED_HOSTS) || "";
-  if (!raw.trim()) return DEFAULT_ALLOWED_HOSTS;
+  if (!raw.trim()) return null;
   return raw
     .split(",")
     .map((h) => h.trim().toLowerCase())
     .filter(Boolean);
 }
 
+function hostPermitted(hostname, env) {
+  const allow = allowedHosts(env);
+  if (!allow) return true;
+  return allow.includes(hostname.toLowerCase());
+}
+
 function enforceAuth(request, env) {
   const required = env && env.PROXY_KEY;
-  if (!required) return null;
+  if (!required) {
+    return json(
+      {
+        error: "proxy_key_required",
+        hint: "Set Worker secret PROXY_KEY (npx wrangler secret put PROXY_KEY). Auth replaces host allowlists.",
+      },
+      503,
+    );
+  }
 
   const headerKey = request.headers.get("X-Proxy-Key");
   const auth = request.headers.get("Authorization") || "";
@@ -119,8 +129,6 @@ function enforceAuth(request, env) {
 }
 
 function resolveTarget(url, env) {
-  const allow = allowedHosts(env);
-
   const viaQuery = url.searchParams.get("url");
   if (viaQuery) {
     let dest;
@@ -132,13 +140,13 @@ function resolveTarget(url, env) {
     if (!["http:", "https:"].includes(dest.protocol)) {
       return json({ error: "invalid_protocol" }, 400);
     }
-    if (!allow.includes(dest.hostname.toLowerCase())) {
+    if (!hostPermitted(dest.hostname, env)) {
       return json({ error: "host_not_allowed", host: dest.hostname }, 403);
     }
     return dest;
   }
 
-  // /query1/...  /query2/...  /fc/...  /finance/...
+  // Yahoo shortcuts: /query1/...  /query2/...  /fc/...  /finance/...
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length === 0) {
     return json({ error: "missing_target" }, 400);
@@ -150,12 +158,12 @@ function resolveTarget(url, env) {
     return json(
       {
         error: "unknown_prefix",
-        hint: "Use /query1/..., /query2/..., /fc/..., /finance/..., or ?url=",
+        hint: "Use /?url=https://host/path for any host, or Yahoo shortcuts /query1|/query2|/fc|/finance/...",
       },
       400,
     );
   }
-  if (!allow.includes(host)) {
+  if (!hostPermitted(host, env)) {
     return json({ error: "host_not_allowed", host }, 403);
   }
 
@@ -173,7 +181,6 @@ async function proxyRequest(request, target) {
     headers.set(key, value);
   }
 
-  // Yahoo is picky about missing UA; keep caller UA or supply a browser-like default.
   if (!headers.has("User-Agent")) {
     headers.set(
       "User-Agent",
@@ -199,7 +206,6 @@ async function proxyRequest(request, target) {
   responseHeaders.set("Access-Control-Allow-Origin", "*");
   responseHeaders.set("Access-Control-Expose-Headers", "*");
   responseHeaders.set("Vary", "Origin, Authorization, X-Proxy-Key");
-  // Avoid caching personalized / crumb responses at shared caches by default.
   if (!responseHeaders.has("Cache-Control")) {
     responseHeaders.set("Cache-Control", "no-store");
   }
