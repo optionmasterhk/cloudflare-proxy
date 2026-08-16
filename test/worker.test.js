@@ -147,7 +147,11 @@ describe("yahoo-finance-proxy worker", () => {
     const lines = [];
     const orig = console.log;
     console.log = (...args) => {
-      lines.push(args.map(String).join(" "));
+      lines.push(
+        args
+          .map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
+          .join(" "),
+      );
     };
     try {
       const res = await worker.fetch(
@@ -168,6 +172,21 @@ describe("yahoo-finance-proxy worker", () => {
     assert.match(blob, /77 6f 72 6b 65 72 2d 6b 65 79/);
   });
 
+  it("includes both keys on the 401 JSON body when DEBUG_AUTH is on", async () => {
+    const res = await worker.fetch(
+      req("/query1/v7/finance/options/SPY", {
+        headers: { "X-Proxy-Key": "zeabur-key" },
+      }),
+      { PROXY_KEY: "worker-key", DEBUG_AUTH: "1" },
+    );
+    assert.equal(res.status, 401);
+    const body = await res.json();
+    assert.equal(body.debug.incoming_header.raw, "zeabur-key");
+    assert.equal(body.debug.worker_secret.raw, "worker-key");
+    assert.equal(body.debug.incoming_header.hex, "7a 65 61 62 75 72 2d 6b 65 79");
+    assert.equal(body.debug.worker_secret.hex, "77 6f 72 6b 65 72 2d 6b 65 79");
+  });
+
   it("skips plaintext auth logs when DEBUG_AUTH=0", async () => {
     const lines = [];
     const orig = console.log;
@@ -175,12 +194,14 @@ describe("yahoo-finance-proxy worker", () => {
       lines.push(args.map(String).join(" "));
     };
     try {
-      await worker.fetch(
+      const res = await worker.fetch(
         req("/query1/v7/finance/options/SPY", {
           headers: { "X-Proxy-Key": "zeabur-key" },
         }),
         { PROXY_KEY: "worker-key", DEBUG_AUTH: "0" },
       );
+      const body = await res.json();
+      assert.equal(body.debug, undefined);
     } finally {
       console.log = orig;
     }
