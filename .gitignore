@@ -9,3 +9,9 @@ node_modules/
 dist/
 .mf/
 coverage/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
