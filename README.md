@@ -115,8 +115,8 @@ Yahoo 嘅 `/v7/finance/options/...`、`/v7/finance/quote` 要 cookie + crumb。W
 2. 不要把密鑰寫進前端或公開 repo。
 3. 如需額外限制上游，可選設 `ALLOWED_HOSTS`。
 4. 免費額度夠「幾十個 ticker、定期更新」；高頻輪詢請自行節流。
-5. **DEBUG_AUTH**（預設 `1`）：proxy-auth 401/503 會喺 **custom** Worker log（唔係嗰條 `GET …` invocation）印 `[auth-debug]`，同時把兩邊 key 放進 JSON body 嘅 `debug`（TG `/checkproxy` 會顯示）。Dashboard 自動 request log 永遠把 `x-proxy-key` 顯示成 `REDACTED`。對完之後設 `DEBUG_AUTH=0` 並 rotate key。
-6. Yahoo 上游 401/403 會打 `[upstream] … (proxy auth already OK)` custom log（含 `has_cookie` / `has_crumb`）。
+5. **DEBUG_AUTH**（預設 `0`）：設 `1` 時，proxy-auth 401/503 會喺 **custom** Worker log（唔係嗰條 `GET …` invocation）印 `[auth-debug]`，同時把兩邊 key 放進 JSON body 嘅 `debug`（TG `/checkproxy` 會顯示）。Dashboard 自動 request log 永遠把 `x-proxy-key` 顯示成 `REDACTED`。對完之後改返 `0` 並 rotate key。Workers Logs（`[observability]`）預設關閉。
+6. Yahoo 上游 401/403 會打 `[upstream] … (proxy auth already OK)` custom log（含 `has_cookie` / `has_crumb`）；要持久化需開 `[observability]`。
 
 ## 指令
 

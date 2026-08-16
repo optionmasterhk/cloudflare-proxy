@@ -9,14 +9,14 @@ compatibility_date = "2025-08-01"
 #   npx wrangler secret put PROXY_KEY
 # Value must equal Zeabur YF_PROXY_KEY (no extra quotes / newline).
 #
-# DEBUG_AUTH=1 (default): on 401/503, console.log both keys as raw + hex +
-# spaced chars so Cloudflare dashboard logs can compare them. Set to "0" after
-# debugging (and rotate PROXY_KEY if logs were shared).
+# DEBUG_AUTH=0 (default): off. Set to "1" temporarily to console.log both keys
+# as raw + hex + spaced chars on 401/503 for Cloudflare dashboard comparison.
+# Rotate PROXY_KEY if those logs were shared.
 [vars]
-DEBUG_AUTH = "1"
+DEBUG_AUTH = "0"
 # ALLOWED_HOSTS = "query1.finance.yahoo.com,query2.finance.yahoo.com"
 
-# Persist console.log custom logs (separate from the GET invocation event).
+# Workers Logs / custom console.log persistence (off unless debugging).
 [observability]
-enabled = true
+enabled = false
 head_sampling_rate = 1

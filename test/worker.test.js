@@ -209,6 +209,27 @@ describe("yahoo-finance-proxy worker", () => {
     assert.equal(lines.join("\n").includes("[auth-debug]"), false);
   });
 
+  it("skips plaintext auth logs when DEBUG_AUTH is unset", async () => {
+    const lines = [];
+    const orig = console.log;
+    console.log = (...args) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      const res = await worker.fetch(
+        req("/query1/v7/finance/options/SPY", {
+          headers: { "X-Proxy-Key": "zeabur-key" },
+        }),
+        { PROXY_KEY: "worker-key" },
+      );
+      const body = await res.json();
+      assert.equal(body.debug, undefined);
+    } finally {
+      console.log = orig;
+    }
+    assert.equal(lines.join("\n").includes("[auth-debug]"), false);
+  });
+
   it("strips Domain=.yahoo.com from upstream Set-Cookie", () => {
     const raw =
       "A3=abc; Expires=Mon, 16 Aug 2027 18:45:29 GMT; Max-Age=31557600; Domain=.yahoo.com; Path=/; SameSite=None; Secure; HttpOnly";
