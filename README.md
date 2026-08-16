@@ -58,16 +58,9 @@ from yfinance_client import make_session
 | Path prefix（建議） | `GET /query1/v8/finance/chart/AAPL` |
 | | `GET /query2/v1/test/getcrumb` |
 | | `GET /fc/` |
-| Query URL | `GET /?url=https://query1.finance.yahoo.com/v8/finance/chart/AAPL` |
+| Query URL（任意 host） | `GET /?url=https://example.com/path` |
 
-允許的上游主機（預設）：
-
-- `query1.finance.yahoo.com`
-- `query2.finance.yahoo.com`
-- `fc.yahoo.com`
-- `finance.yahoo.com`
-
-認證（若有設定 `PROXY_KEY`）：
+認證靠 `PROXY_KEY` 把關；**預設不限 host**。若要自行收緊，可設可選變數 `ALLOWED_HOSTS`（逗號分隔）。
 
 ```http
 X-Proxy-Key: <PROXY_KEY>
@@ -102,9 +95,9 @@ python examples/yfinance_client.py
 
 ## 安全建議
 
-1. **一定要設 `PROXY_KEY`**，否則任何人都能打你的免費額度。
+1. **一定要設 `PROXY_KEY`**（代理路由強制要求）；密鑰即通行證，唔再靠 host allowlist。
 2. 不要把密鑰寫進前端或公開 repo。
-3. 僅允許 Yahoo 相關 host（程式內已寫死 allowlist）。
+3. 如需額外限制上游，可選設 `ALLOWED_HOSTS`。
 4. 免費額度夠「幾十個 ticker、定期更新」；高頻輪詢請自行節流。
 
 ## 指令

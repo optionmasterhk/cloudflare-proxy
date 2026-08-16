@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 from typing import Optional
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit
 
 # yfinance prefers curl_cffi when available.
 try:
@@ -88,15 +88,18 @@ class YahooProxySession(_requests.Session):
         if self.proxy_key:
             headers.setdefault("X-Proxy-Key", self.proxy_key)
 
-        if self.use_query_param and any(h in url for h in YAHOO_HOSTS):
-            proxied = f"{self.proxy_base}/?url={quote(url, safe='')}"
-            return super().request(method, proxied, headers=headers, **kwargs)
+        target = str(url)
+        if self.use_query_param:
+            scheme = urlsplit(target).scheme.lower()
+            if scheme in ("http", "https"):
+                proxied = f"{self.proxy_base}/?url={quote(target, safe='')}"
+                return super().request(method, proxied, headers=headers, **kwargs)
 
-        rewritten = rewrite_yahoo_url(str(url), self.proxy_base)
+        rewritten = rewrite_yahoo_url(target, self.proxy_base)
         if rewritten is not None:
             return super().request(method, rewritten, headers=headers, **kwargs)
 
-        return super().request(method, url, headers=headers, **kwargs)
+        return super().request(method, target, headers=headers, **kwargs)
 
 
 def make_session(
