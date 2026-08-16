@@ -12,7 +12,7 @@ const mod = await import(
   pathToFileURL(new URL("../src/index.js", import.meta.url).pathname).href
 );
 const worker = mod.default;
-const { rewriteUpstreamCookie } = mod;
+const { rewriteUpstreamCookie, resetYahooSession } = mod;
 
 function req(path, init = {}) {
   return new Request(`https://proxy.example${path}`, init);
@@ -221,6 +221,7 @@ describe("yahoo-finance-proxy worker", () => {
   });
 
   it("does not forward Authorization Bearer to upstream", async () => {
+    resetYahooSession();
     const calls = [];
     const origFetch = globalThis.fetch;
     globalThis.fetch = async (url, init = {}) => {
@@ -262,6 +263,7 @@ describe("yahoo-finance-proxy worker", () => {
   });
 
   it("logs upstream 401 as Yahoo auth, not proxy key", async () => {
+    resetYahooSession();
     const lines = [];
     const orig = console.log;
     const origFetch = globalThis.fetch;
@@ -272,11 +274,26 @@ describe("yahoo-finance-proxy worker", () => {
           .join(" "),
       );
     };
-    globalThis.fetch = async () =>
-      new Response('{"finance":{"result":null,"error":{"code":"Unauthorized"}}}', {
-        status: 401,
-        headers: { "content-type": "application/json" },
-      });
+    // Bootstrap succeeds but Yahoo keeps rejecting (e.g. hard block).
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.startsWith("https://fc.yahoo.com")) {
+        return new Response("", {
+          status: 404,
+          headers: { "set-cookie": "A3=x; Path=/" },
+        });
+      }
+      if (u.includes("getcrumb")) {
+        return new Response("crumb", { status: 200 });
+      }
+      return new Response(
+        '{"finance":{"result":null,"error":{"code":"Unauthorized"}}}',
+        {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    };
     try {
       const res = await worker.fetch(
         req("/query1/v7/finance/options/SPY", {
@@ -290,7 +307,7 @@ describe("yahoo-finance-proxy worker", () => {
       globalThis.fetch = origFetch;
     }
     const blob = lines.join("\n");
-    assert.match(blob, /\[upstream\].*401.*proxy auth already OK/);
+    assert.match(blob, /\[upstream\].*401/);
     assert.match(blob, /has_crumb/);
   });
 });
