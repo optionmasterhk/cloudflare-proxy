@@ -174,7 +174,25 @@ function debugAuthEnabled(env) {
 }
 
 function logAuth(event, details) {
-  console.log(`[auth-debug] ${event} ${JSON.stringify(details)}`);
+  // Object form is indexed as a *custom* Workers Log (not the GET invocation).
+  console.log({
+    message: `[auth-debug] ${event}`,
+    auth_debug: event,
+    ...details,
+  });
+}
+
+function authDebugPayload(request, env, headerRaw, bearerRaw, headerList, candidates, provided, required) {
+  return {
+    incoming_header: inspectSecret(headerRaw),
+    incoming_bearer: inspectSecret(bearerRaw),
+    worker_secret: inspectSecret(env && env.PROXY_KEY),
+    env_keys: env ? Object.keys(env) : [],
+    header_names: [...request.headers.keys()],
+    header_values_count: headerList.length,
+    candidates,
+    equal_after_normalize: secretsEqual(provided, required),
+  };
 }
 
 function enforceAuth(request, env) {
@@ -189,44 +207,34 @@ function enforceAuth(request, env) {
   const matched = required ? candidates.some((c) => secretsEqual(c, required)) : false;
 
   if (!required) {
-    if (debugAuthEnabled(env)) {
-      logAuth("proxy_key_unset", {
-        env_keys: env ? Object.keys(env) : [],
-        incoming: inspectSecret(headerRaw),
-        header_values: headerList,
-        header_names: [...request.headers.keys()],
-      });
-    }
+    const debug = debugAuthEnabled(env)
+      ? authDebugPayload(request, env, headerRaw, bearerRaw, headerList, candidates, provided, required)
+      : null;
+    if (debug) logAuth("proxy_key_unset", { path: new URL(request.url).pathname, ...debug });
     return json(
       {
         error: "proxy_key_required",
         hint: "Set Worker secret PROXY_KEY on this Worker (npx wrangler secret put PROXY_KEY). Auth replaces host allowlists.",
+        ...(debug ? { debug } : {}),
       },
       503,
     );
   }
 
   if (!matched) {
-    if (debugAuthEnabled(env)) {
-      logAuth(provided ? "key_mismatch" : "key_missing", {
-        path: new URL(request.url).pathname,
-        env_keys: env ? Object.keys(env) : [],
-        header_names: [...request.headers.keys()],
-        header_values_count: headerList.length,
-        incoming_header: inspectSecret(headerRaw),
-        incoming_bearer: inspectSecret(bearerRaw),
-        worker_secret: inspectSecret(requiredRaw),
-        candidates,
-        equal_after_normalize: secretsEqual(provided, required),
-      });
-    }
+    const reason = provided ? "key_mismatch" : "key_missing";
+    const debug = debugAuthEnabled(env)
+      ? authDebugPayload(request, env, headerRaw, bearerRaw, headerList, candidates, provided, required)
+      : null;
+    if (debug) logAuth(reason, { path: new URL(request.url).pathname, ...debug });
     return json(
       {
         error: "unauthorized",
-        reason: provided ? "key_mismatch" : "key_missing",
-        hint: "X-Proxy-Key / Authorization Bearer must match Worker secret PROXY_KEY. Check Worker logs for [auth-debug] (hex / spaced keys).",
+        reason,
+        hint: "X-Proxy-Key / Authorization Bearer must match Worker secret PROXY_KEY.",
         provided_len: provided.length,
         required_len: required.length,
+        ...(debug ? { debug } : {}),
       },
       401,
     );

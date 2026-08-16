@@ -15,3 +15,8 @@ compatibility_date = "2025-08-01"
 [vars]
 DEBUG_AUTH = "1"
 # ALLOWED_HOSTS = "query1.finance.yahoo.com,query2.finance.yahoo.com"
+
+# Persist console.log custom logs (separate from the GET invocation event).
+[observability]
+enabled = true
+head_sampling_rate = 1
