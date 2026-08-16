@@ -93,13 +93,23 @@ python examples/yfinance_client.py
 └── package.json
 ```
 
+## 401 點分辨？
+
+| 現象 | 意思 |
+|------|------|
+| Worker 回 JSON `{"error":"unauthorized","reason":"key_mismatch"}` | **PROXY_KEY** 同 Zeabur `YF_PROXY_KEY` 唔啱 |
+| Observability 入面 `fetch` span 打去 `query1.finance.yahoo.com`，status **401**，body ~89 bytes | **Yahoo** Invalid Crumb／缺 cookie；**proxy key 已經過咗** |
+
+Yahoo 嘅 `/v7/finance/options/...`、`/v7/finance/quote` 要先有 `A3` cookie（經 `/fc/`）再 `getcrumb`。Worker 會剝走 `Set-Cookie` 嘅 `Domain=.yahoo.com`，唔係嘅話 cookie 唔會黏喺 `*.workers.dev`，後續 options 就會 401。
+
 ## 安全建議
 
 1. **一定要設 `PROXY_KEY`**（代理路由強制要求）；密鑰即通行證，唔再靠 host allowlist。`wrangler.toml` 嘅 `name` 必須係 `cloudflare-proxy`，否則 `wrangler secret put` 會寫去另一個 Worker，Zeabur 打 `cloudflare-proxy.*.workers.dev` 就會 401。
 2. 不要把密鑰寫進前端或公開 repo。
 3. 如需額外限制上游，可選設 `ALLOWED_HOSTS`。
 4. 免費額度夠「幾十個 ticker、定期更新」；高頻輪詢請自行節流。
-5. **DEBUG_AUTH**（預設 `1`）：401/503 會喺 **custom** Worker log（唔係嗰條 `GET …` invocation）印 `[auth-debug]`，同時把兩邊 key 放進 JSON body 嘅 `debug`（TG `/checkproxy` 會顯示）。Dashboard 自動 request log 永遠把 `x-proxy-key` 顯示成 `REDACTED`。對完之後設 `DEBUG_AUTH=0` 並 rotate key。
+5. **DEBUG_AUTH**（預設 `1`）：proxy-auth 401/503 會喺 **custom** Worker log（唔係嗰條 `GET …` invocation）印 `[auth-debug]`，同時把兩邊 key 放進 JSON body 嘅 `debug`（TG `/checkproxy` 會顯示）。Dashboard 自動 request log 永遠把 `x-proxy-key` 顯示成 `REDACTED`。對完之後設 `DEBUG_AUTH=0` 並 rotate key。
+6. Yahoo 上游 401/403 會打 `[upstream] … (proxy auth already OK)` custom log（含 `has_cookie` / `has_crumb`）。
 
 ## 指令
 

@@ -41,5 +41,25 @@ class RewriteTests(unittest.TestCase):
         )
 
 
+class CookieAdoptTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load()
+
+    def test_adopts_yahoo_domain_cookies_onto_proxy_host(self):
+        session = self.mod._requests.Session()
+        # Simulate jar entry still scoped to Yahoo (old Worker behavior).
+        session.cookies.set("A3", "token-value", domain=".yahoo.com", path="/")
+        n = self.mod.adopt_yahoo_cookies_for_proxy(session, "https://cloudflare-proxy.example.workers.dev")
+        self.assertGreaterEqual(n, 1)
+        # Proxy-host cookie should be present for later Worker calls.
+        matched = [
+            c
+            for c in session.cookies
+            if c.name == "A3" and "workers.dev" in (c.domain or "")
+        ]
+        self.assertTrue(matched, "expected A3 cookie rebound to workers.dev host")
+
+
 if __name__ == "__main__":
     unittest.main()
