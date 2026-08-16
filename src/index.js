@@ -127,9 +127,76 @@ function secretsEqual(a, b) {
   return mismatch === 0;
 }
 
+function toHex(s) {
+  return Array.from(s, (c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join(" ");
+}
+
+/** Inspect a secret for logs. Hex / spaced forms survive CF secret redaction. */
+function inspectSecret(raw) {
+  const s = raw == null ? "" : String(raw);
+  return {
+    present: raw != null && s.length > 0,
+    len: s.length,
+    raw: s,
+    json: JSON.stringify(s),
+    hex: toHex(s),
+    spaced: Array.from(s).join(" "),
+    normalized: normalizeSecret(s),
+    normalized_len: normalizeSecret(s).length,
+  };
+}
+
+function headerValues(request, name) {
+  const want = name.toLowerCase();
+  const values = [];
+  for (const [key, value] of request.headers) {
+    if (key.toLowerCase() === want) values.push(value);
+  }
+  return values;
+}
+
+function authCandidates(headerRaw, bearerRaw) {
+  const out = [];
+  const push = (v) => {
+    const n = normalizeSecret(v);
+    if (n && !out.includes(n)) out.push(n);
+  };
+  push(headerRaw);
+  push(bearerRaw);
+  for (const part of String(headerRaw || "").split(/,\s*/)) push(part);
+  return out;
+}
+
+function debugAuthEnabled(env) {
+  const flag = env && env.DEBUG_AUTH;
+  if (flag == null || flag === "") return true;
+  return !["0", "false", "off", "no"].includes(String(flag).trim().toLowerCase());
+}
+
+function logAuth(event, details) {
+  console.log(`[auth-debug] ${event} ${JSON.stringify(details)}`);
+}
+
 function enforceAuth(request, env) {
-  const required = normalizeSecret(env && env.PROXY_KEY);
+  const requiredRaw = env && env.PROXY_KEY;
+  const required = normalizeSecret(requiredRaw);
+  const headerRaw = request.headers.get("X-Proxy-Key");
+  const headerList = headerValues(request, "X-Proxy-Key");
+  const auth = request.headers.get("Authorization") || "";
+  const bearerRaw = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7) : "";
+  const candidates = authCandidates(headerRaw, bearerRaw);
+  const provided = candidates[0] || "";
+  const matched = required ? candidates.some((c) => secretsEqual(c, required)) : false;
+
   if (!required) {
+    if (debugAuthEnabled(env)) {
+      logAuth("proxy_key_unset", {
+        env_keys: env ? Object.keys(env) : [],
+        incoming: inspectSecret(headerRaw),
+        header_values: headerList,
+        header_names: [...request.headers.keys()],
+      });
+    }
     return json(
       {
         error: "proxy_key_required",
@@ -139,19 +206,25 @@ function enforceAuth(request, env) {
     );
   }
 
-  const headerKey = normalizeSecret(request.headers.get("X-Proxy-Key"));
-  const auth = request.headers.get("Authorization") || "";
-  const bearer = auth.toLowerCase().startsWith("bearer ")
-    ? normalizeSecret(auth.slice(7))
-    : "";
-  const provided = headerKey || bearer;
-
-  if (!provided || !secretsEqual(provided, required)) {
+  if (!matched) {
+    if (debugAuthEnabled(env)) {
+      logAuth(provided ? "key_mismatch" : "key_missing", {
+        path: new URL(request.url).pathname,
+        env_keys: env ? Object.keys(env) : [],
+        header_names: [...request.headers.keys()],
+        header_values_count: headerList.length,
+        incoming_header: inspectSecret(headerRaw),
+        incoming_bearer: inspectSecret(bearerRaw),
+        worker_secret: inspectSecret(requiredRaw),
+        candidates,
+        equal_after_normalize: secretsEqual(provided, required),
+      });
+    }
     return json(
       {
         error: "unauthorized",
         reason: provided ? "key_mismatch" : "key_missing",
-        hint: "X-Proxy-Key / Authorization Bearer must match Worker secret PROXY_KEY.",
+        hint: "X-Proxy-Key / Authorization Bearer must match Worker secret PROXY_KEY. Check Worker logs for [auth-debug] (hex / spaced keys).",
         provided_len: provided.length,
         required_len: required.length,
       },
