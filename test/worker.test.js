@@ -43,6 +43,43 @@ describe("yahoo-finance-proxy worker", () => {
       PROXY_KEY: "secret",
     });
     assert.equal(res.status, 401);
+    const body = await res.json();
+    assert.equal(body.error, "unauthorized");
+    assert.equal(body.reason, "key_missing");
+  });
+
+  it("rejects a different key as key_mismatch", async () => {
+    const res = await worker.fetch(
+      req("/query1/v8/finance/chart/AAPL", {
+        headers: { "X-Proxy-Key": "wrong" },
+      }),
+      { PROXY_KEY: "secret" },
+    );
+    assert.equal(res.status, 401);
+    const body = await res.json();
+    assert.equal(body.reason, "key_mismatch");
+    assert.equal(body.provided_len, 5);
+    assert.equal(body.required_len, 6);
+  });
+
+  it("accepts keys that only differ by whitespace, quotes, or a trailing newline", async () => {
+    const cases = [
+      { header: "  secret  ", env: "secret" },
+      { header: "secret", env: "secret\n" },
+      { header: '"secret"', env: "secret" },
+      { header: "secret", env: "'secret'" },
+    ];
+    for (const c of cases) {
+      const res = await worker.fetch(
+        req("/other/v8/finance/chart/AAPL", {
+          headers: { "X-Proxy-Key": c.header },
+        }),
+        { PROXY_KEY: c.env },
+      );
+      assert.equal(res.status, 400, `expected auth to pass for ${JSON.stringify(c)}`);
+      const body = await res.json();
+      assert.equal(body.error, "unknown_prefix");
+    }
   });
 
   it("allows any host via ?url= when authenticated", async () => {

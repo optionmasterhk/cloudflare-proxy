@@ -103,27 +103,60 @@ function hostPermitted(hostname, env) {
   return allow.includes(hostname.toLowerCase());
 }
 
+/** Strip BOM / surrounding quotes / whitespace from secrets and header values. */
+function normalizeSecret(value) {
+  if (value == null) return "";
+  let s = String(value);
+  if (s.charCodeAt(0) === 0xfeff) s = s.slice(1);
+  s = s.trim();
+  if (
+    s.length >= 2 &&
+    ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'")))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  return s;
+}
+
+function secretsEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
 function enforceAuth(request, env) {
-  const required = env && env.PROXY_KEY;
+  const required = normalizeSecret(env && env.PROXY_KEY);
   if (!required) {
     return json(
       {
         error: "proxy_key_required",
-        hint: "Set Worker secret PROXY_KEY (npx wrangler secret put PROXY_KEY). Auth replaces host allowlists.",
+        hint: "Set Worker secret PROXY_KEY on this Worker (npx wrangler secret put PROXY_KEY). Auth replaces host allowlists.",
       },
       503,
     );
   }
 
-  const headerKey = request.headers.get("X-Proxy-Key");
+  const headerKey = normalizeSecret(request.headers.get("X-Proxy-Key"));
   const auth = request.headers.get("Authorization") || "";
   const bearer = auth.toLowerCase().startsWith("bearer ")
-    ? auth.slice(7).trim()
+    ? normalizeSecret(auth.slice(7))
     : "";
   const provided = headerKey || bearer;
 
-  if (!provided || provided !== required) {
-    return json({ error: "unauthorized" }, 401);
+  if (!provided || !secretsEqual(provided, required)) {
+    return json(
+      {
+        error: "unauthorized",
+        reason: provided ? "key_mismatch" : "key_missing",
+        hint: "X-Proxy-Key / Authorization Bearer must match Worker secret PROXY_KEY.",
+        provided_len: provided.length,
+        required_len: required.length,
+      },
+      401,
+    );
   }
   return null;
 }

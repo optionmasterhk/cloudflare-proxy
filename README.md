@@ -19,20 +19,20 @@ Zeabur (yfinance)  →  Cloudflare Worker  →  Yahoo Finance
 ```bash
 npm install
 npx wrangler login
-npx wrangler secret put PROXY_KEY   # 設一組長隨機字串
+npx wrangler secret put PROXY_KEY   # 必須打喺呢個 Worker（name = cloudflare-proxy）
 npm run deploy
 ```
 
 部署後會得到類似：
 
-`https://yahoo-finance-proxy.<your-subdomain>.workers.dev`
+`https://cloudflare-proxy.<your-subdomain>.workers.dev`
 
 ### 2. 在 Zeabur 設定環境變數
 
 | 變數 | 說明 |
 |------|------|
-| `YF_PROXY_BASE` | Worker URL，例如 `https://yahoo-finance-proxy.xxx.workers.dev` |
-| `YF_PROXY_KEY` | 與 `PROXY_KEY` 相同的密鑰 |
+| `YF_PROXY_BASE` | Worker URL，例如 `https://cloudflare-proxy.xxx.workers.dev` |
+| `YF_PROXY_KEY` | 與 **同一個** Worker 的 `PROXY_KEY` 相同（唔好加引號／換行） |
 
 ### 3. Python（繼續用 yfinance）
 
@@ -95,7 +95,7 @@ python examples/yfinance_client.py
 
 ## 安全建議
 
-1. **一定要設 `PROXY_KEY`**（代理路由強制要求）；密鑰即通行證，唔再靠 host allowlist。
+1. **一定要設 `PROXY_KEY`**（代理路由強制要求）；密鑰即通行證，唔再靠 host allowlist。`wrangler.toml` 嘅 `name` 必須係 `cloudflare-proxy`，否則 `wrangler secret put` 會寫去另一個 Worker，Zeabur 打 `cloudflare-proxy.*.workers.dev` 就會 401。
 2. 不要把密鑰寫進前端或公開 repo。
 3. 如需額外限制上游，可選設 `ALLOWED_HOSTS`。
 4. 免費額度夠「幾十個 ticker、定期更新」；高頻輪詢請自行節流。
