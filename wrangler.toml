@@ -1,9 +1,13 @@
-name = "yahoo-finance-proxy"
+# Must match the Cloudflare Git-integrated Worker (repo name / dashboard
+# project). `wrangler secret put` uses this name — a mismatch sends PROXY_KEY
+# to a different Worker than Zeabur hits (YF_PROXY_BASE).
+name = "cloudflare-proxy"
 main = "src/index.js"
 compatibility_date = "2025-08-01"
 
 # Set PROXY_KEY as a Worker secret (required for proxy routes):
 #   npx wrangler secret put PROXY_KEY
+# Value must equal Zeabur YF_PROXY_KEY (no extra quotes / newline).
 #
 # Optional: restrict upstream hosts (comma-separated). Unset = any host allowed.
 # [vars]

@@ -3,7 +3,7 @@ Zeabur / local helper: route yfinance traffic through the Cloudflare Worker.
 
 Usage on Zeabur (or any Python host):
 
-  export YF_PROXY_BASE=https://yahoo-finance-proxy.<subdomain>.workers.dev
+  export YF_PROXY_BASE=https://cloudflare-proxy.<subdomain>.workers.dev
   export YF_PROXY_KEY=your-secret   # must match Worker secret PROXY_KEY
 
   from examples.yfinance_client import make_session
@@ -75,12 +75,14 @@ class YahooProxySession(_requests.Session):
         if _IMPORTER == "curl_cffi" and "impersonate" not in kwargs:
             kwargs["impersonate"] = "chrome"
         super().__init__(**kwargs)
-        self.proxy_base = (proxy_base or os.environ.get("YF_PROXY_BASE", "")).rstrip("/")
-        self.proxy_key = proxy_key if proxy_key is not None else os.environ.get("YF_PROXY_KEY", "")
+        raw_base = proxy_base if proxy_base is not None else os.environ.get("YF_PROXY_BASE", "")
+        raw_key = proxy_key if proxy_key is not None else os.environ.get("YF_PROXY_KEY", "")
+        self.proxy_base = str(raw_base or "").strip().strip("\"'").rstrip("/")
+        self.proxy_key = str(raw_key or "").strip().strip("\"'")
         self.use_query_param = use_query_param
         if not self.proxy_base:
             raise ValueError(
-                "YF_PROXY_BASE is required (e.g. https://yahoo-finance-proxy.xxx.workers.dev)"
+                "YF_PROXY_BASE is required (e.g. https://cloudflare-proxy.xxx.workers.dev)"
             )
 
     def request(self, method, url, **kwargs):  # type: ignore[override]
