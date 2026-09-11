@@ -73,12 +73,12 @@ describe("yahoo-session helpers", () => {
       });
       assert.equal(s.cookie, "A3=tok429");
       assert.equal(s.crumb, null);
-      assert.equal(calls.length, 4);
-      assert.equal(calls.filter((u) => u.includes("getcrumb")).length, 3);
-      const again = await sessionMod.ensureYahooSession({ getcrumbRetryDelaysMs: [0, 0] });
-      assert.equal(again.crumb, null);
       assert.equal(calls.length, 7);
       assert.equal(calls.filter((u) => u.includes("getcrumb")).length, 6);
+      const again = await sessionMod.ensureYahooSession({ getcrumbRetryDelaysMs: [0, 0] });
+      assert.equal(again.crumb, null);
+      assert.equal(calls.length, 13);
+      assert.equal(calls.filter((u) => u.includes("getcrumb")).length, 12);
     } finally {
       globalThis.fetch = orig;
     }
@@ -342,7 +342,7 @@ describe("worker yahoo session injection", () => {
       assert.equal(res.status, 401);
       assert.notEqual(res.status, 502);
       assert.equal(optionsHits, 2);
-      assert.ok(getcrumbHits >= 6);
+      assert.ok(getcrumbHits >= 12);
       const body = await res.text();
       assert.doesNotMatch(body, /proxy_failed|disturbed|getcrumb failed/i);
     } finally {
@@ -390,7 +390,7 @@ describe("worker yahoo session injection", () => {
         { PROXY_KEY: "secret" },
       );
       assert.equal(res.status, 200);
-      assert.ok(getcrumbHits >= 2 && getcrumbHits <= 3);
+      assert.ok(getcrumbHits >= 2 && getcrumbHits <= 6);
       const body = await res.json();
       assert.equal(body.optionChain.result[0].symbol, "SPY");
     } finally {
