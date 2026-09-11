@@ -46,6 +46,39 @@ describe("yahoo-session helpers", () => {
     );
   });
 
+  it("bootstraps cookie only when getcrumb is rate-limited", async () => {
+    const orig = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      calls.push(u);
+      if (u.startsWith("https://fc.yahoo.com")) {
+        return new Response("", {
+          status: 404,
+          headers: {
+            "set-cookie":
+              "A3=tok429; Domain=.yahoo.com; Path=/; SameSite=None; Secure; HttpOnly",
+          },
+        });
+      }
+      if (u.includes("getcrumb")) {
+        return new Response("Too Many Requests", { status: 429 });
+      }
+      throw new Error(`unexpected fetch ${u}`);
+    };
+    try {
+      const s = await sessionMod.ensureYahooSession({ force: true });
+      assert.equal(s.cookie, "A3=tok429");
+      assert.equal(s.crumb, null);
+      assert.equal(calls.length, 2);
+      const again = await sessionMod.ensureYahooSession();
+      assert.equal(again.crumb, null);
+      assert.equal(calls.length, 2);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
   it("bootstraps cookie+crumb via ensureYahooSession", async () => {
     const orig = globalThis.fetch;
     const calls = [];
@@ -196,15 +229,53 @@ describe("worker yahoo session injection", () => {
     }
   });
 
-  it("returns proxy_failed when Yahoo session refresh throws after 401", async () => {
+  it("continues without crumb when getcrumb returns 429 after upstream 401", async () => {
+    const orig = globalThis.fetch;
+    let optionsHits = 0;
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      const headers = new Headers(init.headers || {});
+      if (u.startsWith("https://fc.yahoo.com")) {
+        return new Response("", {
+          status: 404,
+          headers: { "set-cookie": "A3=a3-rate; Domain=.yahoo.com; Path=/" },
+        });
+      }
+      if (u.includes("/v1/test/getcrumb")) {
+        return new Response("Too Many Requests", { status: 429 });
+      }
+      if (u.includes("/v7/finance/options/SPY")) {
+        optionsHits += 1;
+        assert.match(headers.get("cookie") || "", /A3=a3-rate/);
+        assert.equal(new URL(u).searchParams.has("crumb"), false);
+        return new Response("unauthorized", { status: 401 });
+      }
+      throw new Error(`unexpected ${u}`);
+    };
+
+    try {
+      const res = await worker.fetch(
+        req("/query1/v7/finance/options/SPY", {
+          headers: { "X-Proxy-Key": "secret" },
+        }),
+        { PROXY_KEY: "secret" },
+      );
+      assert.equal(res.status, 401);
+      assert.notEqual(res.status, 502);
+      assert.equal(optionsHits, 2);
+      const body = await res.text();
+      assert.doesNotMatch(body, /proxy_failed|disturbed|getcrumb failed/i);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  it("returns proxy_failed when session refresh fails fatally after 401", async () => {
     const orig = globalThis.fetch;
     globalThis.fetch = async (url) => {
       const u = String(url);
       if (u.startsWith("https://fc.yahoo.com")) {
         return new Response("", { status: 404, headers: {} });
-      }
-      if (u.includes("/v1/test/getcrumb")) {
-        return new Response("rate limited", { status: 429 });
       }
       if (u.includes("/v7/finance/options/SPY")) {
         return new Response("unauthorized", { status: 401 });
@@ -222,7 +293,7 @@ describe("worker yahoo session injection", () => {
       assert.equal(res.status, 502);
       const body = await res.json();
       assert.equal(body.error, "proxy_failed");
-      assert.match(body.message, /yahoo_session|getcrumb/i);
+      assert.match(body.message, /yahoo_session/i);
       assert.doesNotMatch(body.message, /disturbed/i);
     } finally {
       globalThis.fetch = orig;

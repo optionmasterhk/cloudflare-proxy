@@ -85,11 +85,13 @@ export function mergeCookieHeader(existing, ...pairs) {
 }
 
 function sessionFresh() {
-  return Boolean(
-    session.cookie &&
-      session.crumb &&
-      Date.now() - session.fetchedAt < SESSION_TTL_MS,
-  );
+  if (!session.cookie || Date.now() - session.fetchedAt >= SESSION_TTL_MS) return false;
+  // Cookie-only sessions (getcrumb rate-limited) are reused until TTL to avoid hammering.
+  return true;
+}
+
+function isGetcrumbRateLimited(status, text) {
+  return status === 429 || /too many requests/i.test(String(text || ""));
 }
 
 function crumbLooksValid(text) {
@@ -134,6 +136,19 @@ export async function ensureYahooSession(opts = {}) {
     },
   });
   const crumbText = (await crumbRes.text()).trim();
+  if (isGetcrumbRateLimited(crumbRes.status, crumbText)) {
+    console.log({
+      message: "[yahoo-session] getcrumb rate-limited; continuing without crumb",
+      status: crumbRes.status,
+      body: crumbText.slice(0, 80),
+    });
+    session = {
+      cookie: a3,
+      crumb: force && session.crumb ? session.crumb : null,
+      fetchedAt: Date.now(),
+    };
+    return session;
+  }
   if (!crumbRes.ok || !crumbLooksValid(crumbText)) {
     throw new Error(
       `yahoo_session: getcrumb failed status=${crumbRes.status} body=${crumbText.slice(0, 80)}`,
@@ -169,10 +184,10 @@ export async function applyYahooSession(target, headers, opts = {}) {
 
   const s = await ensureYahooSession(opts);
   headers.set("Cookie", mergeCookieHeader(headers.get("Cookie"), s.cookie));
-  if (shouldInjectCrumb(target) && !target.searchParams.has("crumb")) {
-    target.searchParams.set("crumb", s.crumb);
-  } else if (shouldInjectCrumb(target) && opts.replaceCrumb) {
-    target.searchParams.set("crumb", s.crumb);
+  if (shouldInjectCrumb(target) && s.crumb) {
+    if (!target.searchParams.has("crumb") || opts.replaceCrumb) {
+      target.searchParams.set("crumb", s.crumb);
+    }
   }
   return s;
 }
