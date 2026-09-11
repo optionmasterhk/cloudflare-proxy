@@ -395,9 +395,9 @@ async function proxyRequest(request, target) {
       has_cookie: headers.has("cookie"),
       has_crumb: dest.searchParams.has("crumb"),
     });
+    // Drain and discard the failed response; never return its body after this.
+    await upstream.arrayBuffer().catch(() => {});
     try {
-      // Drain body so the connection can be reused cleanly.
-      await upstream.arrayBuffer().catch(() => {});
       await applyYahooSession(dest, headers, {
         userAgent: headers.get("User-Agent") || undefined,
         force: true,
@@ -409,6 +409,7 @@ async function proxyRequest(request, target) {
         message: "[yahoo-session] refresh failed",
         error: err instanceof Error ? err.message : String(err),
       });
+      throw err;
     }
   }
 
@@ -424,6 +425,8 @@ async function proxyRequest(request, target) {
   }
 
   const responseHeaders = copyUpstreamHeaders(upstream);
+  responseHeaders.delete("content-length");
+  responseHeaders.delete("transfer-encoding");
   responseHeaders.set("Access-Control-Allow-Origin", "*");
   responseHeaders.set("Access-Control-Expose-Headers", "*");
   responseHeaders.set("Vary", "Origin, Authorization, X-Proxy-Key");
@@ -431,7 +434,11 @@ async function proxyRequest(request, target) {
     responseHeaders.set("Cache-Control", "no-store");
   }
 
-  return new Response(upstream.body, {
+  // Buffer once — never pass upstream.body (retry path may have consumed it).
+  const body =
+    request.method === "HEAD" ? null : await upstream.arrayBuffer().catch(() => new ArrayBuffer(0));
+
+  return new Response(body, {
     status: upstream.status,
     statusText: upstream.statusText,
     headers: responseHeaders,
