@@ -144,6 +144,91 @@ describe("worker yahoo session injection", () => {
     }
   });
 
+  it("buffers final upstream body after 401 retry (no disturbed ReadableStream 502)", async () => {
+    const orig = globalThis.fetch;
+    let optionsHits = 0;
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      const headers = new Headers(init.headers || {});
+      if (u.startsWith("https://fc.yahoo.com")) {
+        return new Response("", {
+          status: 404,
+          headers: { "set-cookie": "A3=a3-retry; Domain=.yahoo.com; Path=/" },
+        });
+      }
+      if (u.includes("/v1/test/getcrumb")) {
+        return new Response("fresh-crumb", { status: 200 });
+      }
+      if (u.includes("/v7/finance/options/SPY")) {
+        optionsHits += 1;
+        if (optionsHits === 1) {
+          return new Response(
+            JSON.stringify({ finance: { error: { code: "Unauthorized" } } }),
+            { status: 401, headers: { "content-type": "application/json" } },
+          );
+        }
+        const crumb = new URL(u).searchParams.get("crumb");
+        if (crumb === "fresh-crumb" && (headers.get("cookie") || "").includes("A3=a3-retry")) {
+          return new Response(JSON.stringify({ optionChain: { symbol: "SPY" } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("still bad", { status: 401 });
+      }
+      throw new Error(`unexpected ${u}`);
+    };
+
+    try {
+      const res = await worker.fetch(
+        req("/query1/v7/finance/options/SPY", {
+          headers: { "X-Proxy-Key": "secret" },
+        }),
+        { PROXY_KEY: "secret" },
+      );
+      assert.equal(res.status, 200);
+      assert.notEqual(res.status, 502);
+      const body = await res.json();
+      assert.deepEqual(body, { optionChain: { symbol: "SPY" } });
+      assert.equal(optionsHits, 2);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  it("returns proxy_failed when Yahoo session refresh throws after 401", async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.startsWith("https://fc.yahoo.com")) {
+        return new Response("", { status: 404, headers: {} });
+      }
+      if (u.includes("/v1/test/getcrumb")) {
+        return new Response("rate limited", { status: 429 });
+      }
+      if (u.includes("/v7/finance/options/SPY")) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      throw new Error(`unexpected ${u}`);
+    };
+
+    try {
+      const res = await worker.fetch(
+        req("/query1/v7/finance/options/SPY", {
+          headers: { "X-Proxy-Key": "secret" },
+        }),
+        { PROXY_KEY: "secret" },
+      );
+      assert.equal(res.status, 502);
+      const body = await res.json();
+      assert.equal(body.error, "proxy_failed");
+      assert.match(body.message, /yahoo_session|getcrumb/i);
+      assert.doesNotMatch(body.message, /disturbed/i);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
   it("refreshes session and retries once after upstream 401", async () => {
     const orig = globalThis.fetch;
     let optionsHits = 0;
