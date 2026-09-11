@@ -16,8 +16,11 @@ const GETCRUMB_URLS = [
   "https://query2.finance.yahoo.com/v1/test/getcrumb",
 ];
 
-/** Backoff before attempts 2 and 3 (ms). Override via opts.getcrumbRetryDelaysMs in tests. */
-const DEFAULT_GETCRUMB_RETRY_DELAYS_MS = [500, 1000];
+/** getcrumb attempts alternate query1 / query2. Override delays via opts.getcrumbRetryDelaysMs in tests. */
+const GETCRUMB_ATTEMPT_COUNT = 6;
+
+/** Backoff before attempts 2–6 (ms). Override via opts.getcrumbRetryDelaysMs in tests. */
+const DEFAULT_GETCRUMB_RETRY_DELAYS_MS = [2000, 5000, 10000, 10000, 15000];
 
 /** @type {{ cookie: string|null, crumb: string|null, fetchedAt: number }} */
 let session = { cookie: null, crumb: null, fetchedAt: 0 };
@@ -120,25 +123,30 @@ function crumbLooksValid(text) {
   return true;
 }
 
+function getcrumbDelayBeforeAttempt(attemptIndex, retryDelaysMs) {
+  if (attemptIndex <= 0) return 0;
+  const idx = attemptIndex - 1;
+  if (idx < retryDelaysMs.length) return retryDelaysMs[idx];
+  const last = retryDelaysMs[retryDelaysMs.length - 1];
+  return last ?? DEFAULT_GETCRUMB_RETRY_DELAYS_MS[DEFAULT_GETCRUMB_RETRY_DELAYS_MS.length - 1];
+}
+
 /**
- * Try getcrumb on query1/query2 with short backoff. Returns a crumb or null when
- * every attempt is rate-limited. Non-429 failures throw immediately.
+ * Try getcrumb on query1/query2 with backoff. Returns a crumb or null when every
+ * attempt is rate-limited. Non-429 failures throw immediately.
  * @param {string} a3
  * @param {string} ua
  * @param {number[]} retryDelaysMs
  */
 async function fetchCrumbWithRetries(a3, ua, retryDelaysMs) {
-  const attempts = [
-    { url: GETCRUMB_URLS[0], delayBefore: 0 },
-    { url: GETCRUMB_URLS[1], delayBefore: retryDelaysMs[0] ?? 500 },
-    { url: GETCRUMB_URLS[0], delayBefore: retryDelaysMs[1] ?? 1000 },
-  ];
-
   let lastStatus = 0;
   let lastBody = "";
 
-  for (const { url, delayBefore } of attempts) {
+  for (let i = 0; i < GETCRUMB_ATTEMPT_COUNT; i++) {
+    const delayBefore = getcrumbDelayBeforeAttempt(i, retryDelaysMs);
     if (delayBefore > 0) await sleep(delayBefore);
+
+    const url = GETCRUMB_URLS[i % GETCRUMB_URLS.length];
 
     const crumbRes = await fetch(url, {
       method: "GET",
