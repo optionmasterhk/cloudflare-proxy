@@ -11,6 +11,14 @@ const DEFAULT_UA =
 
 const SESSION_TTL_MS = 50 * 60 * 1000;
 
+const GETCRUMB_URLS = [
+  "https://query1.finance.yahoo.com/v1/test/getcrumb",
+  "https://query2.finance.yahoo.com/v1/test/getcrumb",
+];
+
+/** Backoff before attempts 2 and 3 (ms). Override via opts.getcrumbRetryDelaysMs in tests. */
+const DEFAULT_GETCRUMB_RETRY_DELAYS_MS = [500, 1000];
+
 /** @type {{ cookie: string|null, crumb: string|null, fetchedAt: number }} */
 let session = { cookie: null, crumb: null, fetchedAt: 0 };
 
@@ -84,10 +92,18 @@ export function mergeCookieHeader(existing, ...pairs) {
   return [...map.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
 }
 
+function cookieFresh() {
+  return Boolean(
+    session.cookie && Date.now() - session.fetchedAt < SESSION_TTL_MS,
+  );
+}
+
 function sessionFresh() {
-  if (!session.cookie || Date.now() - session.fetchedAt >= SESSION_TTL_MS) return false;
-  // Cookie-only sessions (getcrumb rate-limited) are reused until TTL to avoid hammering.
-  return true;
+  return cookieFresh() && Boolean(session.crumb);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isGetcrumbRateLimited(status, text) {
@@ -105,42 +121,91 @@ function crumbLooksValid(text) {
 }
 
 /**
+ * Try getcrumb on query1/query2 with short backoff. Returns a crumb or null when
+ * every attempt is rate-limited. Non-429 failures throw immediately.
+ * @param {string} a3
+ * @param {string} ua
+ * @param {number[]} retryDelaysMs
+ */
+async function fetchCrumbWithRetries(a3, ua, retryDelaysMs) {
+  const attempts = [
+    { url: GETCRUMB_URLS[0], delayBefore: 0 },
+    { url: GETCRUMB_URLS[1], delayBefore: retryDelaysMs[0] ?? 500 },
+    { url: GETCRUMB_URLS[0], delayBefore: retryDelaysMs[1] ?? 1000 },
+  ];
+
+  let lastStatus = 0;
+  let lastBody = "";
+
+  for (const { url, delayBefore } of attempts) {
+    if (delayBefore > 0) await sleep(delayBefore);
+
+    const crumbRes = await fetch(url, {
+      method: "GET",
+      headers: {
+        "User-Agent": ua,
+        Accept: "*/*",
+        Cookie: a3,
+      },
+    });
+    const crumbText = (await crumbRes.text()).trim();
+
+    if (crumbRes.ok && crumbLooksValid(crumbText)) {
+      return { crumb: crumbText, rateLimited: false };
+    }
+    if (isGetcrumbRateLimited(crumbRes.status, crumbText)) {
+      lastStatus = crumbRes.status;
+      lastBody = crumbText;
+      console.log({
+        message: "[yahoo-session] getcrumb rate-limited; will retry",
+        status: crumbRes.status,
+        host: new URL(url).hostname,
+        body: crumbText.slice(0, 80),
+      });
+      continue;
+    }
+
+    throw new Error(
+      `yahoo_session: getcrumb failed status=${crumbRes.status} body=${crumbText.slice(0, 80)}`,
+    );
+  }
+
+  return { crumb: null, rateLimited: true, status: lastStatus, body: lastBody };
+}
+
+/**
  * Bootstrap A3 + crumb directly against Yahoo (not via this Worker).
- * @param {{ userAgent?: string, force?: boolean }} [opts]
+ * @param {{ userAgent?: string, force?: boolean, getcrumbRetryDelaysMs?: number[] }} [opts]
  */
 export async function ensureYahooSession(opts = {}) {
   const force = Boolean(opts.force);
   const ua = opts.userAgent || DEFAULT_UA;
+  const retryDelaysMs = opts.getcrumbRetryDelaysMs ?? DEFAULT_GETCRUMB_RETRY_DELAYS_MS;
   if (!force && sessionFresh()) return session;
 
-  const fcRes = await fetch("https://fc.yahoo.com/", {
-    method: "GET",
-    headers: {
-      "User-Agent": ua,
-      Accept: "*/*",
-    },
-    redirect: "manual",
-  });
-  const cookiePairs = parseSetCookiePairs(fcRes);
-  const a3 = cookiePairs.find((p) => p.toLowerCase().startsWith("a3="));
+  let a3 = !force && cookieFresh() ? session.cookie : null;
   if (!a3) {
-    throw new Error("yahoo_session: no A3 cookie from fc.yahoo.com");
+    const fcRes = await fetch("https://fc.yahoo.com/", {
+      method: "GET",
+      headers: {
+        "User-Agent": ua,
+        Accept: "*/*",
+      },
+      redirect: "manual",
+    });
+    const cookiePairs = parseSetCookiePairs(fcRes);
+    a3 = cookiePairs.find((p) => p.toLowerCase().startsWith("a3="));
+    if (!a3) {
+      throw new Error("yahoo_session: no A3 cookie from fc.yahoo.com");
+    }
   }
 
-  const crumbRes = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
-    method: "GET",
-    headers: {
-      "User-Agent": ua,
-      Accept: "*/*",
-      Cookie: a3,
-    },
-  });
-  const crumbText = (await crumbRes.text()).trim();
-  if (isGetcrumbRateLimited(crumbRes.status, crumbText)) {
+  const crumbResult = await fetchCrumbWithRetries(a3, ua, retryDelaysMs);
+  if (crumbResult.rateLimited) {
     console.log({
-      message: "[yahoo-session] getcrumb rate-limited; continuing without crumb",
-      status: crumbRes.status,
-      body: crumbText.slice(0, 80),
+      message: "[yahoo-session] getcrumb rate-limited after retries; continuing without crumb",
+      status: crumbResult.status,
+      body: crumbResult.body.slice(0, 80),
     });
     session = {
       cookie: a3,
@@ -149,15 +214,10 @@ export async function ensureYahooSession(opts = {}) {
     };
     return session;
   }
-  if (!crumbRes.ok || !crumbLooksValid(crumbText)) {
-    throw new Error(
-      `yahoo_session: getcrumb failed status=${crumbRes.status} body=${crumbText.slice(0, 80)}`,
-    );
-  }
 
   session = {
     cookie: a3,
-    crumb: crumbText,
+    crumb: crumbResult.crumb,
     fetchedAt: Date.now(),
   };
   return session;

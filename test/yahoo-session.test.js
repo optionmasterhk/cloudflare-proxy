@@ -46,7 +46,7 @@ describe("yahoo-session helpers", () => {
     );
   });
 
-  it("bootstraps cookie only when getcrumb is rate-limited", async () => {
+  it("bootstraps cookie only after getcrumb retries are exhausted on 429", async () => {
     const orig = globalThis.fetch;
     const calls = [];
     globalThis.fetch = async (url) => {
@@ -67,13 +67,90 @@ describe("yahoo-session helpers", () => {
       throw new Error(`unexpected fetch ${u}`);
     };
     try {
-      const s = await sessionMod.ensureYahooSession({ force: true });
+      const s = await sessionMod.ensureYahooSession({
+        force: true,
+        getcrumbRetryDelaysMs: [0, 0],
+      });
       assert.equal(s.cookie, "A3=tok429");
       assert.equal(s.crumb, null);
-      assert.equal(calls.length, 2);
-      const again = await sessionMod.ensureYahooSession();
+      assert.equal(calls.length, 4);
+      assert.equal(calls.filter((u) => u.includes("getcrumb")).length, 3);
+      const again = await sessionMod.ensureYahooSession({ getcrumbRetryDelaysMs: [0, 0] });
       assert.equal(again.crumb, null);
-      assert.equal(calls.length, 2);
+      assert.equal(calls.length, 7);
+      assert.equal(calls.filter((u) => u.includes("getcrumb")).length, 6);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  it("retries getcrumb after 429 and succeeds on second attempt", async () => {
+    const orig = globalThis.fetch;
+    let getcrumbHits = 0;
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.startsWith("https://fc.yahoo.com")) {
+        return new Response("", {
+          status: 404,
+          headers: {
+            "set-cookie": "A3=retry-ok; Domain=.yahoo.com; Path=/; Secure",
+          },
+        });
+      }
+      if (u.includes("getcrumb")) {
+        getcrumbHits += 1;
+        if (getcrumbHits === 1) {
+          return new Response("Too Many Requests", { status: 429 });
+        }
+        return new Response("crumb-after-retry", { status: 200 });
+      }
+      throw new Error(`unexpected fetch ${u}`);
+    };
+    try {
+      const s = await sessionMod.ensureYahooSession({
+        force: true,
+        getcrumbRetryDelaysMs: [0, 0],
+      });
+      assert.equal(s.cookie, "A3=retry-ok");
+      assert.equal(s.crumb, "crumb-after-retry");
+      assert.equal(getcrumbHits, 2);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  it("tries query2 getcrumb after query1 returns 429", async () => {
+    const orig = globalThis.fetch;
+    const getcrumbHosts = [];
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.startsWith("https://fc.yahoo.com")) {
+        return new Response("", {
+          status: 404,
+          headers: {
+            "set-cookie": "A3=alt-host; Domain=.yahoo.com; Path=/; Secure",
+          },
+        });
+      }
+      if (u.includes("getcrumb")) {
+        getcrumbHosts.push(new URL(u).hostname);
+        if (u.includes("query1.finance.yahoo.com")) {
+          return new Response("Too Many Requests", { status: 429 });
+        }
+        return new Response("crumb-from-query2", { status: 200 });
+      }
+      throw new Error(`unexpected fetch ${u}`);
+    };
+    try {
+      const s = await sessionMod.ensureYahooSession({
+        force: true,
+        getcrumbRetryDelaysMs: [0, 0],
+      });
+      assert.equal(s.crumb, "crumb-from-query2");
+      assert.deepEqual(getcrumbHosts, [
+        "query1.finance.yahoo.com",
+        "query2.finance.yahoo.com",
+      ]);
     } finally {
       globalThis.fetch = orig;
     }
@@ -229,9 +306,10 @@ describe("worker yahoo session injection", () => {
     }
   });
 
-  it("continues without crumb when getcrumb returns 429 after upstream 401", async () => {
+  it("continues without crumb only after getcrumb retries exhausted on 401 refresh", async () => {
     const orig = globalThis.fetch;
     let optionsHits = 0;
+    let getcrumbHits = 0;
     globalThis.fetch = async (url, init = {}) => {
       const u = String(url);
       const headers = new Headers(init.headers || {});
@@ -242,6 +320,7 @@ describe("worker yahoo session injection", () => {
         });
       }
       if (u.includes("/v1/test/getcrumb")) {
+        getcrumbHits += 1;
         return new Response("Too Many Requests", { status: 429 });
       }
       if (u.includes("/v7/finance/options/SPY")) {
@@ -263,8 +342,57 @@ describe("worker yahoo session injection", () => {
       assert.equal(res.status, 401);
       assert.notEqual(res.status, 502);
       assert.equal(optionsHits, 2);
+      assert.ok(getcrumbHits >= 6);
       const body = await res.text();
       assert.doesNotMatch(body, /proxy_failed|disturbed|getcrumb failed/i);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
+  it("options succeed when getcrumb recovers after initial 429", async () => {
+    const orig = globalThis.fetch;
+    let getcrumbHits = 0;
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      const headers = new Headers(init.headers || {});
+      if (u.startsWith("https://fc.yahoo.com")) {
+        return new Response("", {
+          status: 404,
+          headers: { "set-cookie": "A3=a3-recover; Domain=.yahoo.com; Path=/" },
+        });
+      }
+      if (u.includes("/v1/test/getcrumb")) {
+        getcrumbHits += 1;
+        if (getcrumbHits === 1) {
+          return new Response("Too Many Requests", { status: 429 });
+        }
+        return new Response("recovered-crumb", { status: 200 });
+      }
+      if (u.includes("/v7/finance/options/SPY")) {
+        const crumb = new URL(u).searchParams.get("crumb");
+        if (crumb === "recovered-crumb" && (headers.get("cookie") || "").includes("A3=a3-recover")) {
+          return new Response(JSON.stringify({ optionChain: { result: [{ symbol: "SPY" }] } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("unauthorized", { status: 401 });
+      }
+      throw new Error(`unexpected ${u}`);
+    };
+
+    try {
+      const res = await worker.fetch(
+        req("/query1/v7/finance/options/SPY", {
+          headers: { "X-Proxy-Key": "secret" },
+        }),
+        { PROXY_KEY: "secret" },
+      );
+      assert.equal(res.status, 200);
+      assert.ok(getcrumbHits >= 2 && getcrumbHits <= 3);
+      const body = await res.json();
+      assert.equal(body.optionChain.result[0].symbol, "SPY");
     } finally {
       globalThis.fetch = orig;
     }
